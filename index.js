@@ -3,6 +3,7 @@ const qrcode = require('qrcode-terminal');
 const readline = require('readline');
 const fs = require('fs');
 const axios = require('axios');
+const tiktoken = require('tiktoken');
 
 // Create a new WhatsApp client
 const client = new Client({
@@ -19,6 +20,9 @@ const LM_STUDIO_API_URL = 'http://localhost:1234/v1/chat/completions';
 const MAX_CONTEXT_TOKENS = 4096;
 const MAX_CONTEXT_FOR_MESSAGES = 3000; // Reserve some tokens for system prompt and response
 const MAX_COMPLETION_TOKENS = 800; // Maximum tokens to reserve for model completion
+
+// Create the tokenizer - using cl100k_base which is used by many modern LLMs
+const encoder = tiktoken.get_encoding("cl100k_base");
 
 // Create readline interface for terminal input
 const rl = readline.createInterface({
@@ -56,15 +60,14 @@ client.on('ready', async () => {
 });
 
 /**
- * Estimate token count for a string using a more conservative approach
- * Most language models use roughly 1 token per 3 characters for English text
+ * Count tokens accurately using tiktoken
  * @param {string} text - Text to count tokens for
- * @returns {number} - Estimated token count
+ * @returns {number} - Actual token count
  */
-function estimateTokenCount(text) {
+function countTokens(text) {
     if (!text) return 0;
-    // More conservative estimate: ~3 chars = 1 token (was 4)
-    return Math.ceil(text.length / 3);
+    const tokens = encoder.encode(text);
+    return tokens.length;
 }
 
 /**
@@ -98,7 +101,7 @@ function formatMessageCompact(msg) {
 }
 
 /**
- * Create chunks of messages based on token count
+ * Create chunks of messages based on token count using tiktoken
  * @param {Array} messages - Array of message objects
  * @returns {Array} - Array of chunks, where each chunk is an array of formatted message strings
  */
@@ -112,16 +115,16 @@ function createTokenBasedChunks(messages) {
     // Reduce max chunk tokens to be more cautious
     const maxChunkTokens = Math.min(2000, MAX_CONTEXT_FOR_MESSAGES - systemOverheadTokens);
 
-    console.log(`Creating chunks with maximum ${maxChunkTokens} tokens each (conservative estimate)...`);
+    console.log(`Creating chunks with maximum ${maxChunkTokens} tokens each (tiktoken-based counting)...`);
 
     // First, format all messages and filter out empty ones
     const formattedMessages = messages
         .map(formatMessageCompact)
         .filter(msg => msg !== null);
 
-    // Then create chunks based on token count
+    // Then create chunks based on accurate token count
     for (const formattedMsg of formattedMessages) {
-        const msgTokens = estimateTokenCount(formattedMsg);
+        const msgTokens = countTokens(formattedMsg);
 
         // If adding this message would exceed the chunk limit or chunk getting too big, start a new chunk
         if ((currentTokenCount + msgTokens > maxChunkTokens) && currentChunk.length > 0) {
@@ -140,7 +143,7 @@ function createTokenBasedChunks(messages) {
             // Replace the last message with a further truncated version
             currentChunk[currentChunk.length - 1] = formattedMsg.substring(0, Math.floor(maxChunkTokens * 0.5)) + "... [message truncated due to length]";
             // Recalculate token count for the chunk
-            currentTokenCount = currentChunk.reduce((sum, msg) => sum + estimateTokenCount(msg), 0);
+            currentTokenCount = currentChunk.reduce((sum, msg) => sum + countTokens(msg), 0);
         }
     }
 
@@ -167,9 +170,9 @@ async function summarizeWithLLM(messages) {
         for (let i = 0; i < messageChunks.length; i++) {
             const chunk = messageChunks[i];
             const chatText = chunk.join('\n');
-            const totalTokens = estimateTokenCount(chatText);
+            const totalTokens = countTokens(chatText);
 
-            console.log(`Chunk ${i + 1}: Estimated ${totalTokens} tokens, ${chunk.length} messages`);
+            console.log(`Chunk ${i + 1}: ${totalTokens} tokens, ${chunk.length} messages`);
 
             // If chunk is still too big, split it in half recursively
             if (totalTokens > 2000) {
@@ -186,50 +189,194 @@ async function summarizeWithLLM(messages) {
 
         console.log(`After optimization: ${messageChunks.length} chunks to process`);
 
+        // Process chunks in batches to prevent context overflow
+        const BATCH_SIZE = 2; // Process chunks in batches of 3
         let fullSummary = '';
 
-        // Process each chunk and build a progressive summary
-        for (let i = 0; i < messageChunks.length; i++) {
-            const chunk = messageChunks[i];
-            const chunkIndex = i + 1;
+        // Process chunks in batches
+        for (let batchIndex = 0; batchIndex < Math.ceil(messageChunks.length / BATCH_SIZE); batchIndex++) {
+            // Get the current batch of chunks
+            const startIdx = batchIndex * BATCH_SIZE;
+            const endIdx = Math.min(startIdx + BATCH_SIZE, messageChunks.length);
+            const currentBatchChunks = messageChunks.slice(startIdx, endIdx);
 
-            console.log(`Processing chunk ${chunkIndex}/${messageChunks.length} (${chunk.length} messages)...`);
+            console.log(`\nProcessing batch ${batchIndex + 1} (chunks ${startIdx + 1} to ${endIdx})...`);
 
-            // Join the formatted messages
-            const chatText = chunk.join('\n');
+            // Process each chunk in the current batch
+            let batchSummary = '';
 
-            // Log token count as a final check
-            console.log(`Sending chunk with approximately ${estimateTokenCount(chatText)} tokens`);
+            for (let i = 0; i < currentBatchChunks.length; i++) {
+                const chunk = currentBatchChunks[i];
+                const chunkIndex = startIdx + i + 1;
 
-            // Adjust the prompt based on whether this is the first chunk or a follow-up
-            let prompt;
-            if (i === 0) {
-                prompt = `Please provide a concise summary of the following WhatsApp chat messages. Focus on the main topics discussed and key information:
+                console.log(`Processing chunk ${chunkIndex}/${messageChunks.length} (${chunk.length} messages)...`);
 
+                // Join the formatted messages
+                const chatText = chunk.join('\n');
+
+                // Log token count as a final check
+                console.log(`Sending chunk with exactly ${countTokens(chatText)} tokens`);
+
+                // Improved prompts for better summaries
+                let prompt;
+                if (i === 0 && batchSummary === '') {
+                    // First chunk in this batch - use initial prompt
+                    prompt = `You are analyzing WhatsApp messages from a group conversation.
+
+Summarize the following chat messages in a clear, organized format. Focus on:
+- Main topics or themes discussed
+- Key information shared by participants
+- Any questions asked and answers provided
+- Any decisions made or action items mentioned
+- Notable opinions or sentiments expressed
+
+Format your summary with bullet points under topic headings, using proper structure and organization.
+
+CHAT MESSAGES:
 ${chatText}
 
-Summary:`;
-            } else {
-                prompt = `Continue analyzing this WhatsApp conversation. Here is the summary so far:
+SUMMARY:`;
+                } else {
+                    // Continue with the batch summary - use continuation prompt
+                    prompt = `Continue analyzing this WhatsApp conversation.
 
-${fullSummary}
+Current summary:
+${batchSummary}
 
-And here are more messages to incorporate:
+Incorporate these additional messages while maintaining the same format and structure:
+- Add new topics if they appear
+- Expand on previously mentioned topics with new information
+- Note any resolution to previously mentioned questions or discussions
+- Maintain a cohesive narrative throughout
 
+ADDITIONAL MESSAGES:
 ${chatText}
 
-Updated summary:`;
+UPDATED SUMMARY:`;
+                }
+
+                // Calculate prompt token count for logging
+                const promptTokens = countTokens(prompt);
+                console.log(`Complete prompt token count: ${promptTokens}`);
+
+                // Safety check to avoid context overflow
+                if (promptTokens > 3800) {
+                    console.log(`Warning: Prompt is too large (${promptTokens} tokens). Creating intermediate summary...`);
+                    // If we already have a batch summary, we'll consider it complete and move on
+                    break;
+                }
+
+                // Make API request to local LMStudio instance
+                const response = await axios.post(LM_STUDIO_API_URL, {
+                    model: 'local-model',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations.'
+                        },
+                        { role: 'user', content: prompt }
+                    ],
+                    temperature: 0.3,
+                    max_tokens: MAX_COMPLETION_TOKENS
+                }, {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                // Update the batch summary
+                const chunkSummary = response.data.choices[0].message.content;
+                batchSummary = i === 0 ? chunkSummary : batchSummary + "\n\n" + chunkSummary;
+
+                // To avoid rate limiting issues with local API
+                if (i < currentBatchChunks.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
             }
 
-            // Make API request to local LMStudio instance
+            // Combine with the full summary
+            if (fullSummary === '') {
+                fullSummary = batchSummary;
+            } else {
+                // Create an intermediate consolidation between the previous summary and this batch
+                console.log(`Consolidating batch ${batchIndex + 1} with previous summary...`);
+
+                const consolidationPrompt = `I have two summaries from different parts of the same WhatsApp conversation. Create a cohesive, well-structured summary that integrates both.
+
+FORMAT REQUIREMENTS:
+1. Begin with a high-level overview (2-3 sentences)
+2. Organize by main discussion topics with clear headings
+3. Use bullet points for key points under each topic
+4. Highlight any decisions made or action items
+5. Maintain chronological flow where relevant
+
+FIRST SUMMARY:
+${fullSummary}
+
+SECOND SUMMARY:
+${batchSummary}
+
+COMBINED SUMMARY:`;
+
+                const consolidationTokens = countTokens(consolidationPrompt);
+                console.log(`Consolidation prompt tokens: ${consolidationTokens}`);
+
+                // Make API request for consolidation
+                const response = await axios.post(LM_STUDIO_API_URL, {
+                    model: 'local-model',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations.'
+                        },
+                        { role: 'user', content: consolidationPrompt }
+                    ],
+                    temperature: 0.3,
+                    max_tokens: MAX_COMPLETION_TOKENS
+                }, {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                fullSummary = response.data.choices[0].message.content;
+            }
+
+            // Small delay between batches
+            if (batchIndex < Math.ceil(messageChunks.length / BATCH_SIZE) - 1) {
+                await new Promise(resolve => setTimeout(resolve, 150));
+            }
+        }
+
+        // Final refinement for multi-batch summaries (optional)
+        if (messageChunks.length > BATCH_SIZE) {
+            console.log("Performing final refinement of summary...");
+
+            const finalRefinementPrompt = `You're creating a final executive summary of a WhatsApp group conversation.
+
+Please refine the following summary into a professional, well-organized report format with:
+
+1. OVERVIEW: A brief introduction and high-level summary (1-2 paragraphs)
+2. KEY TOPICS: Main discussion areas with bullet points for important details
+3. DECISIONS & ACTION ITEMS: Clear list of any decisions made and actions assigned
+4. NOTABLE MENTIONS: Any important links, events, or references shared in the chat
+
+Keep the tone professional and focus on clarity and readability.
+
+DRAFT SUMMARY:
+${fullSummary}
+
+REFINED SUMMARY:`;
+
+            // Make API request for final refinement
             const response = await axios.post(LM_STUDIO_API_URL, {
                 model: 'local-model',
                 messages: [
                     {
                         role: 'system',
-                        content: 'You are a concise summarizer of WhatsApp conversations.'
+                        content: 'You are an expert analyst who creates clear, structured executive summaries.'
                     },
-                    { role: 'user', content: prompt }
+                    { role: 'user', content: finalRefinementPrompt }
                 ],
                 temperature: 0.3,
                 max_tokens: MAX_COMPLETION_TOKENS
@@ -239,43 +386,7 @@ Updated summary:`;
                 }
             });
 
-            // Update the full summary with this chunk's analysis
-            const chunkSummary = response.data.choices[0].message.content;
-            fullSummary = i === 0 ? chunkSummary : fullSummary + "\n\n" + chunkSummary;
-
-            // To avoid rate limiting issues with local API
-            if (i < messageChunks.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-        }
-
-        // Final summary refinement if we had multiple chunks
-        if (messageChunks.length > 1) {
-            console.log("Creating final consolidated summary...");
-            const finalPrompt = `Here is a multi-part summary of a WhatsApp conversation. Please consolidate this into a single coherent summary:
-
-${fullSummary}
-
-Consolidated summary:`;
-
-            const finalResponse = await axios.post(LM_STUDIO_API_URL, {
-                model: 'local-model',
-                messages: [
-                    {
-                        role: 'system',
-                        content: 'You are a concise summarizer of WhatsApp conversations.'
-                    },
-                    { role: 'user', content: finalPrompt }
-                ],
-                temperature: 0.3,
-                max_tokens: MAX_COMPLETION_TOKENS
-            }, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            return finalResponse.data.choices[0].message.content;
+            fullSummary = response.data.choices[0].message.content;
         }
 
         return fullSummary;
