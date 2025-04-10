@@ -21,6 +21,10 @@ const MAX_CONTEXT_TOKENS = 4096;
 const MAX_CONTEXT_FOR_MESSAGES = 3000; // Reserve some tokens for system prompt and response
 const MAX_COMPLETION_TOKENS = 800; // Maximum tokens to reserve for model completion
 
+// Auto-summarization configuration
+const AUTO_SUMMARY_THRESHOLD = 500; // Trigger summary every 500 messages
+const messageCounters = {}; // Track message count by chat ID
+
 // Create the tokenizer - using cl100k_base which is used by many modern LLMs
 const encoder = tiktoken.get_encoding("cl100k_base");
 
@@ -98,6 +102,48 @@ function formatMessageCompact(msg) {
     }
 
     return `[${timeStr}] ${author}: ${body}`;
+}
+
+/**
+ * Format WhatsApp messages consistently for various operations
+ * @param {object} msg - Raw WhatsApp message object
+ * @param {boolean} isFormatted - Whether this is already a formatted message object
+ * @returns {object} - Consistently formatted message object
+ */
+function formatMessage(msg, isFormatted = false) {
+    if (isFormatted) return msg; // Already formatted message
+
+    return {
+        timestamp: new Date(msg.timestamp * 1000).toISOString(),
+        from: msg.from,
+        author: msg.fromMe ? 'You' : (msg._data.notifyName || msg.author || 'Unknown'),
+        body: msg.body,
+        hasMedia: msg.hasMedia,
+        fromMe: msg.fromMe
+    };
+}
+
+/**
+ * Handle common summarization output operations
+ * @param {string} summary - The generated summary
+ * @param {string} fileName - Optional filename to save summary to
+ * @param {boolean} logToConsole - Whether to log the summary to console
+ * @returns {string} - The summary text
+ */
+function handleSummaryOutput(summary, fileName = null, logToConsole = true) {
+    if (logToConsole) {
+        console.log('\n===== CHAT SUMMARY =====\n');
+        console.log(summary);
+        console.log('\n========================\n');
+    }
+
+    if (fileName) {
+        const summaryFileName = `${fileName.replace('.json', '')}-summary.txt`;
+        fs.writeFileSync(summaryFileName, summary);
+        console.log(`Summary saved to ${summaryFileName}`);
+    }
+
+    return summary;
 }
 
 /**
@@ -427,14 +473,7 @@ function promptUser() {
                     console.log('Generating summary with LLM via LMStudio...');
                     const summary = await summarizeWithLLM(messages);
 
-                    console.log('\n===== CHAT SUMMARY =====\n');
-                    console.log(summary);
-                    console.log('\n========================\n');
-
-                    // Save summary to file
-                    const summaryFileName = `${fileName.replace('.json', '')}-summary.txt`;
-                    fs.writeFileSync(summaryFileName, summary);
-                    console.log(`Summary saved to ${summaryFileName}`);
+                    handleSummaryOutput(summary, fileName);
                 }
             } catch (error) {
                 console.error('Error processing summarize command:', error.message);
@@ -480,15 +519,7 @@ function promptUser() {
                 console.log(`Retrieved ${messages.length} messages from "${targetChat.name}"`);
 
                 // Format and save messages to file
-                const formattedMessages = messages.map(msg => ({
-                    timestamp: new Date(msg.timestamp * 1000).toISOString(),
-                    from: msg.from,
-                    author: msg._data.notifyName || msg.author || 'Unknown',
-                    body: msg.body,
-                    hasMedia: msg.hasMedia
-                }));
-
-                // Save messages to file using chat ID in filename
+                const formattedMessages = messages.map(msg => formatMessage(msg));
                 const fileName = `chat-${targetChat.id._serialized.replace(/[^a-z0-9]/gi, '-')}-${Date.now()}.json`;
                 fs.writeFileSync(fileName, JSON.stringify(formattedMessages, null, 2));
                 console.log(`Messages saved to ${fileName}`);
@@ -505,14 +536,7 @@ function promptUser() {
                         console.log('Generating summary with LLM via LMStudio...');
                         const summary = await summarizeWithLLM(formattedMessages);
 
-                        console.log('\n===== CHAT SUMMARY =====\n');
-                        console.log(summary);
-                        console.log('\n========================\n');
-
-                        // Save summary to file
-                        const summaryFileName = `${fileName.replace('.json', '')}-summary.txt`;
-                        fs.writeFileSync(summaryFileName, summary);
-                        console.log(`Summary saved to ${summaryFileName}`);
+                        handleSummaryOutput(summary, fileName);
                     }
                     promptUser();
                 });
@@ -532,6 +556,30 @@ function promptUser() {
 // Message handler
 client.on('message_create', async (message) => {
     console.log(`Message received: ${message.body}`);
+
+    // Increment message counter for the chat
+    const chatId = message.from;
+    if (!messageCounters[chatId]) {
+        messageCounters[chatId] = 0;
+    }
+    messageCounters[chatId]++;
+
+    // Check if auto-summarization is triggered
+    if (messageCounters[chatId] >= AUTO_SUMMARY_THRESHOLD) {
+        console.log(`Auto-summarization triggered for chat: ${chatId}`);
+        messageCounters[chatId] = 0; // Reset counter
+
+        try {
+            const chat = await message.getChat();
+            const chatMessages = await chat.fetchMessages({ limit: AUTO_SUMMARY_THRESHOLD });
+            const formattedMessages = chatMessages.map(msg => formatMessage(msg));
+
+            const summary = await summarizeWithLLM(formattedMessages);
+            await chat.sendMessage(`*Auto-Generated Summary of Last ${AUTO_SUMMARY_THRESHOLD} Messages:*\n\n${summary}`);
+        } catch (error) {
+            console.error('Error during auto-summarization:', error);
+        }
+    }
 
     // Handle summarize command
     if (message.body.toLowerCase().startsWith('!summarize')) {
@@ -561,14 +609,7 @@ client.on('message_create', async (message) => {
             console.log(`Retrieved ${chatMessages.length} messages for summarization`);
 
             // Format messages for summarization
-            const formattedMessages = chatMessages.map(msg => ({
-                timestamp: new Date(msg.timestamp * 1000).toISOString(),
-                from: msg.from,
-                author: msg.fromMe ? 'You' : (msg._data.notifyName || msg.author || 'Unknown'), // Better handling of own messages
-                body: msg.body,
-                hasMedia: msg.hasMedia,
-                fromMe: msg.fromMe
-            }));
+            const formattedMessages = chatMessages.map(msg => formatMessage(msg));
 
             // Generate summary
             console.log('Generating summary with LMStudio...');
@@ -578,9 +619,7 @@ client.on('message_create', async (message) => {
             await message.reply(`*Chat Summary of ${chatMessages.length} messages*\n\n${summary}`);
 
             // Also log the summary to console
-            console.log('\n===== CHAT SUMMARY =====\n');
-            console.log(summary);
-            console.log('\n========================\n');
+            handleSummaryOutput(summary);
 
         } catch (error) {
             console.error('Error processing summarize command:', error);
