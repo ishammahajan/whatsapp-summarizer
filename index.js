@@ -19,10 +19,10 @@ const LM_STUDIO_API_URL = 'http://localhost:1234/v1/chat/completions';
 // Context window settings
 const MAX_CONTEXT_TOKENS = 4096;
 const MAX_CONTEXT_FOR_MESSAGES = 3000; // Reserve some tokens for system prompt and response
-const MAX_COMPLETION_TOKENS = 800; // Maximum tokens to reserve for model completion
+const MAX_COMPLETION_TOKENS = 1400; // Maximum tokens to reserve for model completion
 
 // Auto-summarization configuration
-const AUTO_SUMMARY_THRESHOLD = 500; // Trigger summary every 500 messages
+const AUTO_SUMMARY_THRESHOLD = 250; // Trigger summary every 500 messages
 const messageCounters = {}; // Track message count by chat ID
 
 // Create the tokenizer - using cl100k_base which is used by many modern LLMs
@@ -236,7 +236,7 @@ async function summarizeWithLLM(messages) {
         console.log(`After optimization: ${messageChunks.length} chunks to process`);
 
         // Process chunks in batches to prevent context overflow
-        const BATCH_SIZE = 2; // Process chunks in batches of 3
+        const BATCH_SIZE = 2; // Process chunks in batches of 2
         let fullSummary = '';
 
         // Process chunks in batches
@@ -269,14 +269,16 @@ async function summarizeWithLLM(messages) {
                     // First chunk in this batch - use initial prompt
                     prompt = `You are analyzing WhatsApp messages from a group conversation.
 
-Summarize the following chat messages in a clear, organized format. Focus on:
-- Main topics or themes discussed
-- Key information shared by participants
-- Any questions asked and answers provided
-- Any decisions made or action items mentioned
-- Notable opinions or sentiments expressed
+Summarize ONLY the information explicitly present in these chat messages. Focus on:
+- Main topics discussed with DIRECT QUOTES when possible
+- Factual information shared by participants (avoid interpretations)
+- Questions asked and their exact answers if provided
+- Decisions that were explicitly stated
+- DO NOT add any information, names, or topics not directly mentioned in the messages
 
-Format your summary with bullet points under topic headings, using proper structure and organization.
+IMPORTANT: If something is unclear or ambiguous, indicate this with phrases like "possibly discussing" or "unclear context about". If you're unsure about a topic or detail, acknowledge the uncertainty rather than guessing.
+
+Format with clear topic headings and bullet points using only information from the chat.
 
 CHAT MESSAGES:
 ${chatText}
@@ -289,11 +291,17 @@ SUMMARY:`;
 Current summary:
 ${batchSummary}
 
+CRITICAL INSTRUCTIONS:
+- Include ONLY information present in these new messages
+- If the new messages contradict the summary, mention both perspectives explicitly
+- Use "according to the conversation" instead of assuming facts
+- Maintain uncertainty markers like "possibly" or "appears to be" 
+- Do not add any details that seem speculative unless directly quoted
+
 Incorporate these additional messages while maintaining the same format and structure:
 - Add new topics if they appear
 - Expand on previously mentioned topics with new information
 - Note any resolution to previously mentioned questions or discussions
-- Maintain a cohesive narrative throughout
 
 ADDITIONAL MESSAGES:
 ${chatText}
@@ -318,11 +326,11 @@ UPDATED SUMMARY:`;
                     messages: [
                         {
                             role: 'system',
-                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations.'
+                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations. ONLY include information explicitly stated in the messages. Do not add any information not directly present in the input.'
                         },
                         { role: 'user', content: prompt }
                     ],
-                    temperature: 0.3,
+                    temperature: 0.1, // Lower temperature for more conservative outputs
                     max_tokens: MAX_COMPLETION_TOKENS
                 }, {
                     headers: {
@@ -347,10 +355,17 @@ UPDATED SUMMARY:`;
                 // Create an intermediate consolidation between the previous summary and this batch
                 console.log(`Consolidating batch ${batchIndex + 1} with previous summary...`);
 
-                const consolidationPrompt = `I have two summaries from different parts of the same WhatsApp conversation. Create a cohesive, well-structured summary that integrates both.
+                const consolidationPrompt = `I have two summaries from different parts of the same WhatsApp conversation. Create a cohesive summary that integrates both.
+
+CRITICAL INSTRUCTIONS:
+- Include ONLY information present in either summary
+- If the summaries contradict each other, mention both perspectives explicitly
+- Use "according to the conversation" instead of assuming facts
+- Maintain uncertainty markers like "possibly" or "appears to be" from the original summaries
+- Remove any details that seem speculative unless directly quoted
 
 FORMAT REQUIREMENTS:
-1. Begin with a high-level overview (2-3 sentences)
+1. Begin with a high-level overview (2-3 sentences) of CONFIRMED topics only
 2. Organize by main discussion topics with clear headings
 3. Use bullet points for key points under each topic
 4. Highlight any decisions made or action items
@@ -373,11 +388,11 @@ COMBINED SUMMARY:`;
                     messages: [
                         {
                             role: 'system',
-                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations.'
+                            content: 'You are an expert analyst who creates clear, structured summaries of group conversations. Only include information explicitly stated in the summaries.'
                         },
                         { role: 'user', content: consolidationPrompt }
                     ],
-                    temperature: 0.3,
+                    temperature: 0.1, // Lower temperature for more factual outputs
                     max_tokens: MAX_COMPLETION_TOKENS
                 }, {
                     headers: {
@@ -400,11 +415,17 @@ COMBINED SUMMARY:`;
 
             const finalRefinementPrompt = `You're creating a final executive summary of a WhatsApp group conversation.
 
+CRITICAL INSTRUCTIONS:
+- Do NOT introduce new information not present in the draft summary
+- Maintain all uncertainty markers (like "possibly" or "appears")
+- Keep all contradictory perspectives mentioned in the original
+- Clearly separate facts from opinions in the conversation
+
 Please refine the following summary into a professional, well-organized report format with:
 
 1. OVERVIEW: A brief introduction and high-level summary (1-2 paragraphs)
 2. KEY TOPICS: Main discussion areas with bullet points for important details
-3. DECISIONS & ACTION ITEMS: Clear list of any decisions made and actions assigned
+3. DECISIONS & ACTION ITEMS: Clear list of any decisions made and actions assigned (if any)
 4. NOTABLE MENTIONS: Any important links, events, or references shared in the chat
 
 Keep the tone professional and focus on clarity and readability.
@@ -420,11 +441,11 @@ REFINED SUMMARY:`;
                 messages: [
                     {
                         role: 'system',
-                        content: 'You are an expert analyst who creates clear, structured executive summaries.'
+                        content: 'You are an expert analyst who creates clear, structured executive summaries. Only include information explicitly stated in the original summary.'
                     },
                     { role: 'user', content: finalRefinementPrompt }
                 ],
-                temperature: 0.3,
+                temperature: 0.1, // Lower temperature for more accurate outputs
                 max_tokens: MAX_COMPLETION_TOKENS
             }, {
                 headers: {
@@ -559,6 +580,7 @@ client.on('message_create', async (message) => {
 
     // Increment message counter for the chat
     const chatId = message.from;
+    console.log(`Message counter for chat ${chatId}: ${messageCounters[chatId] || 0}`);
     if (!messageCounters[chatId]) {
         messageCounters[chatId] = 0;
     }
