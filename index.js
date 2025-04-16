@@ -19,7 +19,7 @@ const LM_STUDIO_API_URL = 'http://localhost:1234/v1/chat/completions';
 // Context window settings
 const MAX_CONTEXT_TOKENS = 4096;
 const MAX_CONTEXT_FOR_MESSAGES = 3000; // Reserve some tokens for system prompt and response
-const MAX_COMPLETION_TOKENS = 1400; // Maximum tokens to reserve for model completion
+const MAX_COMPLETION_TOKENS = 900; // Maximum tokens to reserve for model completion
 
 // Auto-summarization configuration
 const AUTO_SUMMARY_THRESHOLD = 250; // Trigger summary every 500 messages
@@ -101,7 +101,17 @@ function formatMessageCompact(msg) {
         author = author.split('@')[0];
     }
 
-    return `[${timeStr}] ${author}: ${body}`;
+    // Add reply context if available
+    let replyContext = '';
+    if (msg.quotedMsg) {
+        // Keep the reply context brief but informative
+        const quotedPreview = msg.quotedMsg.body.length > 60 ?
+            msg.quotedMsg.body.substring(0, 60) + '...' :
+            msg.quotedMsg.body;
+        replyContext = ` [replying to ${msg.quotedMsg.author}: "${quotedPreview}"]`;
+    }
+
+    return `[${timeStr}] ${author}: ${body}${replyContext}`;
 }
 
 /**
@@ -113,13 +123,23 @@ function formatMessageCompact(msg) {
 function formatMessage(msg, isFormatted = false) {
     if (isFormatted) return msg; // Already formatted message
 
+    // Extract quoted message information if available
+    let quotedInfo = null;
+    if (msg._data && msg._data.quotedMsg) {
+        quotedInfo = {
+            author: msg._data.quotedMsg.notifyName || 'Unknown',
+            body: msg._data.quotedMsg.body || ''
+        };
+    }
+
     return {
         timestamp: new Date(msg.timestamp * 1000).toISOString(),
         from: msg.from,
         author: msg.fromMe ? 'You' : (msg._data.notifyName || msg.author || 'Unknown'),
         body: msg.body,
         hasMedia: msg.hasMedia,
-        fromMe: msg.fromMe
+        fromMe: msg.fromMe,
+        quotedMsg: quotedInfo // Add quoted message info
     };
 }
 
@@ -276,7 +296,13 @@ Summarize ONLY the information explicitly present in these chat messages. Focus 
 - Decisions that were explicitly stated
 - DO NOT add any information, names, or topics not directly mentioned in the messages
 
-IMPORTANT: If something is unclear or ambiguous, indicate this with phrases like "possibly discussing" or "unclear context about". If you're unsure about a topic or detail, acknowledge the uncertainty rather than guessing.
+IMPORTANT: When you see [replying to X: "message"] in a message, this indicates the message is a reply to a previous message by user X. Use this reply context to:
+- Better understand conversation threads
+- Connect related messages even when they're separated by other messages
+- Identify question-answer pairs when someone replies to a question
+- Follow the flow of discussions on specific topics
+
+If something is unclear or ambiguous, indicate this with phrases like "possibly discussing" or "unclear context about". If you're unsure about a topic or detail, acknowledge the uncertainty rather than guessing.
 
 Format with clear topic headings and bullet points using only information from the chat.
 
