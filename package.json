@@ -1,20 +1,32 @@
 {
   "name": "whatsapp-summarizer",
   "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js"
+  "description": "A tool to summarize WhatsApp chats using LLMs",
+  "main": "src/index.js",
+  "bin": {
+    "whatsapp-summarizer": "./src/cli.js"
   },
-  "keywords": [],
+  "scripts": {
+    "start": "node src/index.js",
+    "cli": "node src/cli.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "whatsapp",
+    "summarizer",
+    "llm",
+    "chat"
+  ],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "axios": "^1.8.4",
+    "commander": "^11.1.0",
+    "dotenv": "^16.5.0",
     "puppeteer": "^24.6.0",
     "qrcode-terminal": "^0.12.0",
     "tiktoken": "^1.0.20",
-    "whatsapp-web.js": "^1.27.0"
+    "whatsapp-web.js": "^1.27.0",
+    "winston": "^3.17.0"
   }
 }

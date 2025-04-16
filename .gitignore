@@ -3,7 +3,7 @@
 
 ### Node ###
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -143,5 +143,16 @@ dist
 
 # End of https://www.toptal.com/developers/gitignore/api/node
 
-.wwebjs_auth
-.wwebjs_cache
+# Authentication data
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Data directory
+data/
+
+# IDE configuration
+.vscode/
+.idea/
+
+# OS specific files
+.DS_Store
