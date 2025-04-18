@@ -29,33 +29,35 @@ function setupEvents() {
 	client.on('message_create', async (message) => {
 		logger.info(`Message received: ${message.body}`);
 
-		// Increment message counter for the chat
-		const chatId = message.from;
-		logger.debug(`Message counter for chat ${chatId}: ${messageCounters[chatId] || 0}`);
+		// TODO: Disable auto-summarization for now
 
-		if (!messageCounters[chatId]) {
-			messageCounters[chatId] = 0;
-		}
-		messageCounters[chatId]++;
+		// // Increment message counter for the chat
+		// const chatId = message.from;
+		// logger.debug(`Message counter for chat ${chatId}: ${messageCounters[chatId] || 0}`);
 
-		// Check if auto-summarization is triggered
-		if (messageCounters[chatId] >= config.whatsapp.autoSummaryThreshold) {
-			logger.info(`Auto-summarization triggered for chat: ${chatId}`);
-			messageCounters[chatId] = 0; // Reset counter
+		// if (!messageCounters[chatId]) {
+		// 	messageCounters[chatId] = 0;
+		// }
+		// messageCounters[chatId]++;
 
-			try {
-				const chat = await message.getChat();
-				const chatMessages = await chat.fetchMessages({ limit: config.whatsapp.autoSummaryThreshold });
-				const formattedMessages = chatMessages.map(msg => formatMessage(msg));
+		// // Check if auto-summarization is triggered
+		// if (messageCounters[chatId] >= config.whatsapp.autoSummaryThreshold) {
+		// 	logger.info(`Auto-summarization triggered for chat: ${chatId}`);
+		// 	messageCounters[chatId] = 0; // Reset counter
 
-				logger.info('Generating auto-summary...');
-				const summary = await summarizeWithLLM(formattedMessages);
-				await chat.sendMessage(`*Auto-Generated Summary of Last ${config.whatsapp.autoSummaryThreshold} Messages:*\n\n${summary}`);
-				logger.info('Auto-summary sent to chat');
-			} catch (error) {
-				logger.error('Error during auto-summarization:', error);
-			}
-		}
+		// 	try {
+		// 		const chat = await message.getChat();
+		// 		const chatMessages = await chat.fetchMessages({ limit: config.whatsapp.autoSummaryThreshold });
+		// 		const formattedMessages = chatMessages.map(msg => formatMessage(msg));
+
+		// 		logger.info('Generating auto-summary...');
+		// 		const summary = await summarizeWithLLM(formattedMessages);
+		// 		await chat.sendMessage(`*Auto-Generated Summary of Last ${config.whatsapp.autoSummaryThreshold} Messages:*\n\n${summary}`);
+		// 		logger.info('Auto-summary sent to chat');
+		// 	} catch (error) {
+		// 		logger.error('Error during auto-summarization:', error);
+		// 	}
+		// }
 
 		// Handle summarize command
 		if (message.body.toLowerCase().startsWith('!summarize')) {
